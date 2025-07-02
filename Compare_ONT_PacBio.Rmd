@@ -1,0 +1,288 @@
+#activate libraries
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+library(MicrobiotaProcess)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(ComplexUpset)
+library(tidytree)
+library(data.table)
+library(DT)
+library(tidyr)
+library(ggVennDiagram)
+library(aplot)
+library(patchwork)
+library(dplyr)
+library(tibble)
+library(ggvenn)
+library(vegan)
+```
+
+#import data
+```{r}
+#Nanopore
+meta_np <-read.csv("path/to/metadata_ont.csv", colClasses = "character", sep = ",")
+meta_np <- meta_np[1:48, ]
+meta_np$technology <- "ONT"
+meta_np$sampleid <- paste(meta_np$sampleid, "ONT", sep = "_")
+barcodes_np <- meta_np$barcode
+
+emu_np <- read.csv("path/to/emu_ont.tsv", sep = "\t")
+emu_np <- emu_np %>% filter(row.names(emu_np) %in% barcodes_np)
+numeric_columns_np <- sapply(emu_np, is.numeric)
+zero_sum_columns_np <- colSums(emu_np[, numeric_columns_np]) == 0
+emu_np <- emu_np[, !zero_sum_columns_np]
+col_names_np <- colnames(emu_np)
+emu_np <- rownames_to_column(emu_np)
+
+taxonomy_np <- read.csv("path/to/taxonomy_pac.tsv", sep = "\t")
+taxonomy_np[taxonomy_np == ""] <- NA
+taxonomy_np <- taxonomy_np %>% filter(species %in% col_names_np)
+
+#PacBio
+meta_pb <- read.csv("path/to/metadata_pac.csv", colClasses = "character", sep = ",")
+meta_pb$technology <- "PacBio"
+meta_pb$sampleid <- paste(meta_pb$sampleid, "PacBio", sep = "_")
+barcodes_pb <- meta_pb$barcode
+
+emu_pb <- read.csv("path/to/emu_10.tsv", sep = "\t")
+emu_pb <- emu_pb %>% filter(row.names(emu_pb) %in% barcodes_pb)
+#remove zero sum columns
+numeric_columns_pb <- sapply(emu_pb, is.numeric)
+zero_sum_columns_pb <- colSums(emu_pb[, numeric_columns_pb]) == 0
+emu_pb <- emu_pb[, !zero_sum_columns_pb]
+col_names_pb <- colnames(emu_pb) 
+emu_pb <- rownames_to_column(emu_pb)
+
+taxonomy_pb <- read.csv("path/to/taxonomy_10.tsv", sep = "\t")
+taxonomy_pb[taxonomy_pb == ""] <- NA
+#remove row with taxa with zero reads
+taxonomy_pb <- taxonomy_pb %>% filter(species %in% col_names_pb)
+
+emu_pb <- emu_pb[, c("rowname", taxonomy_pb$species)]
+```
+
+#merge and process data
+```{r}
+metadata <- rbind(meta_np, meta_pb)
+
+taxonomy <- rbind(taxonomy_np, taxonomy_pb)
+taxonomy <- unique(taxonomy)
+
+
+colname_np <- colnames(emu_np)
+colname_pb <- colnames(emu_pb)
+common_taxa <- colname_np %in% colname_pb
+match_emu <- colname_np[common_taxa]
+
+emu <- full_join(emu_np, emu_pb, by = match_emu)
+emu[is.na(emu)] <- 0
+rownames(emu) <- emu$rowname
+emu <- emu[, 2:length(colnames(emu))]
+
+```
+
+###procrusts test
+```{r}
+# Bray-Curtis + PCoA
+dist_tax <- vegdist(emu, method = "bray")
+pcoa_tax <- cmdscale(dist_tax, eig = TRUE, k = 2) 
+X <- pcoa_tax$points  
+
+# make dummy-matrix
+Y <- model.matrix(~ technology - 1, data = metadata)  # remove intercept
+colnames(Y) <- levels(factor(metadata$technology))    # clean names
+
+test_result <- protest(X = X, Y = Y, permutations = 999)
+print(test_result)
+plot(test_result)
+```
+
+
+
+# import data as phyloseq object
+```{r}
+ps.taxonomy <- taxonomy
+rownames(ps.taxonomy) <- ps.taxonomy$species
+
+ps.meta <- metadata
+rownames(ps.meta) <- ps.meta$barcode
+
+ps <- phyloseq(otu_table(emu, taxa_are_rows = F), phyloseq::tax_table(as.matrix(ps.taxonomy[-1][c(6:1)])), sample_data(ps.meta[-1]))
+```
+
+# import data as MicrobiotaProcess
+```{r}
+ps %>% as.MPSE() -> mpse
+mpse <- mpse %>% mp_filter_taxa(.abundance = Abundance, min.abun = 1, min.prop = 0.05)
+mpse %<>% mp_rrarefy()
+```
+
+# alpha-diversity technology
+```{r fig.height=4, fig.width=4}
+mpse %<>% mp_cal_alpha(.abundance=RareAbundance)
+
+alpha_plot_group <- mpse %>% 
+    mp_plot_alpha(
+        .group=technology, 
+        .alpha=c(Shannon)
+    )+
+    scale_fill_brewer(palette = "Set1")+
+    scale_color_brewer(palette = "Set1")+
+  theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, size = 10, colour = "black", hjust = 1), 
+          title = element_text(size = 13),
+          strip.text = element_blank(),
+          legend.position = "none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+  labs(y = "Shannon index")
+alpha_plot_group
+```
+
+#save alpha
+```{r}
+ggsave("path/to/alpha.pdf", plot = alpha_plot_group, device = "pdf", width = 4, height = 4)
+```
+
+
+# taxonomy barplots (genus, phylum)
+```{r fig.height=6, fig.width=9}
+mpse %<>%
+    mp_cal_abundance( # for each samples
+        .abundance = RareAbundance
+    ) %>%
+    mp_cal_abundance( # for each groups 
+        .abundance=RareAbundance,
+        .group=technology
+    )
+
+
+```
+```{r fig.height=6, fig.width=6}
+genus_barplot_1 <- mpse %>%
+  mp_plot_abundance(
+    width = 0.55,
+    .abundance = RareAbundance,
+    .group = technology,
+    taxa.class = genus,
+    rmun = TRUE,
+    topn = 6,
+    rm.zero = TRUE,
+    plot.group = TRUE,
+    relative = TRUE,
+    force = TRUE
+  ) 
+plot_data <- ggplot_build(genus_barplot_1)
+unique(plot_data[["data"]][[1]][["alluvium"]])
+
+predefined_colors <- c(
+  "Others" = "#54278F",
+  "g__Brevitalea" = "#4D4D4D",
+  "g__Solirubrobacter" = "#429375",
+  "g__Baekduia" = "#883590",
+  "g__Vicinamibacter" = "#F28629",
+  "g__Bacillus" = "#E6DB71",
+  "g__Gaiella" = "#1F78B4"
+)
+
+genus_barplot_1_1 <- genus_barplot_1 +
+  scale_fill_manual(
+    values = predefined_colors,
+    labels = gsub("^g__", "", names(predefined_colors))
+  ) +
+  theme(
+    legend.position = "none",
+    legend.text = element_text(size = 16),
+    legend.key.height = unit(0.4, 'cm'),
+    legend.key.width = unit(0.3, 'cm'),
+    axis.text.x = element_text(angle = 30, size = 20, colour = "black", hjust = 1),
+    title = element_text(size = 24)
+  ) +
+  guides(fill = guide_legend(ncol = 1)) #+
+  #xlab("Technology")
+
+
+genus_barplot_1_1
+```
+#save bar
+```{r}
+ggsave("path/to/bar.pdf", plot = genus_barplot_1_1, device = "pdf", width = 6, height = 6)
+```
+
+#Venn new 
+```{r fig.height=4, fig.width=6}
+venn_plot <- ggvenn::ggvenn(list(ONT = taxonomy_np$species, PacBio = taxonomy_pb$species),text_size = 6, fill_color = c("red", "green"), fill_alpha = 0.6)
+venn_plot
+```
+#save venn
+```{r}
+ggsave("path/to/venn.pdf", plot = venn_plot, device = "pdf", width = 6, height = 4)
+```
+#Venn genus new 
+```{r fig.height=4, fig.width=6}
+venn_genus <- ggvenn::ggvenn(list(ONT = unique(na.omit(taxonomy_np$genus)),
+                                  PacBio = unique(na.omit(taxonomy_pb$genus))),
+                             text_size = 6, 
+                             fill_color = c("red", "green"),
+                             fill_alpha = 0.6)
+venn_genus
+```
+#save venn
+```{r}
+ggsave("path/to/venn_genus.pdf", plot = venn_genus, device = "pdf", width = 6, height = 4)
+```
+
+# beta-diversity PCA group
+```{r}
+mpse %<>% mp_decostand(.abundance=Abundance, method = "hellinger")
+mpse %<>% mp_cal_pca(.abundance = hellinger)
+```
+
+# Permutational Multivariate Analysis of Variance (group)
+```{r}
+mpse %<>% mp_adonis(.abundance = hellinger, distmethod = "bray",
+.formula = ~technology, permutation = 9999, action = "add")
+mpse %>% mp_extract_internal_attr(name=adonis) %>% mp_fortify() 
+```
+
+
+# beta-diversity (Bray-Curtis dissimilarity distance) PCoA group
+```{r fig.height=5, fig.width=5}
+mpse %<>% mp_decostand(.abundance=Abundance)
+mpse %<>% mp_cal_dist(.abundance=hellinger, distmethod="bray")
+mpse %<>% mp_cal_pcoa(.abundance=hellinger, distmethod="bray")
+
+bray_pcoa_group <- mpse %>%
+    mp_plot_ord(
+        .ord = pcoa, 
+        .group = technology,
+        .color = technology, 
+        .size = 1.75,
+        .alpha = 1,
+        ellipse = TRUE,
+        show.legend = F,
+        show.side = F
+    )+
+    scale_fill_brewer(palette = "Set1", name = "Technology")+
+    scale_color_brewer(palette = "Set1")+
+    theme(axis.text.x = element_text(angle = 45, size = 10, colour = "black", hjust = 1), 
+          title = element_text(size = 13),
+          legend.position = "bottom") +
+  annotate("text", x = 0.28, y = -0.32, label = "Pr(>F) = 1e-04", color = "red", size = 3) # add here the PERMANOVA p-value
+bray_pcoa_group
+```
+
+
+# betta analysis save
+```{r fig.height=12, fig.width=12}
+ggsave("path/to/betta.pdf", plot = bray_pcoa_group, device = "pdf", width = 5, height = 5)
+```
