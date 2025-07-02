@@ -1,0 +1,283 @@
+#activate libraries
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(tidytree)
+library(data.table)
+library(DT)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(aplot)
+library(patchwork)
+library(vroom)
+library(readr)
+library(data.table)
+library(shadowtext)
+library(grid)
+```
+
+#make functions
+```{r}
+#filter by triplets
+triplet_filter <- function(emu) {
+  emu$bio_id <- rep(1:(length(rownames(emu))/3), each = 3) 
+  emu_cols <- emu %>%
+    group_by(bio_id) %>%
+    summarise(across(where(is.numeric), ~ sum(.x > 0, na.rm = TRUE))) %>%
+    select(where(~ any(.x == 3, na.rm = TRUE))) %>%
+    colnames()
+  emu <- emu[emu_cols[-1]]
+  return(emu)
+  
+}
+
+#reshape
+reshape_to_emu <- function(taxa, emu) {
+  
+  #emu
+  emu <- as.data.frame(t(emu))
+  emu <- rownames_to_column(emu)
+  emu <- left_join(taxa[c(1,7)], emu, by = "rowname")
+  emu <- emu[-1]
+  emu <- emu %>% 
+    group_by(Genus) %>%
+    summarise(across(where(is.numeric), sum))
+  emu <- emu %>% filter(!is.na(Genus))
+  emu <- as.data.frame(emu)
+  rownames(emu) <- emu$Genus
+  emu <- emu[-1]
+  emu <- as.data.frame(t(emu))
+  return(emu)
+}
+
+#remove odd symbols taxa
+rm_taxa <- function(taxa) {
+  taxa$Genus <- gsub(" ", "", taxa$Genus)
+  taxa$Genus <- gsub("\\[|\\]", "", taxa$Genus)
+  taxa$Genus <- gsub("-", "_", taxa$Genus)
+  return(taxa)
+}
+#remove odd symbols emu
+rm_emu <- function(emu) {
+  colnames(emu) <- gsub(" ", "", colnames(emu))
+  colnames(emu) <- gsub("\\[|\\]", "", colnames(emu))
+  colnames(emu) <- gsub("-", "_", colnames(emu))
+  return(emu)
+}
+```
+
+#import data
+```{r}
+### ONT FULL
+taxa_ont <- read.csv("path/to/taxonomy.tsv", sep = "\t")
+taxa_ont[taxa_ont == ""] <- NA
+taxa_ont <- rename(taxa_ont, Genus = "genus", Family = "family", Order = "order", Class = "class", Phylum = "phylum", Kingdom = "superkingdom")
+taxa_ont <- taxa_ont[, 6:1]
+taxa_ont$Genus <- gsub("^X", "", taxa_ont$Genus)
+
+emu_ont <- read.csv("path/to/emu.tsv", sep = "\t")
+emu_ont <- triplet_filter(emu = emu_ont)
+colnames(emu_ont) <- gsub("^X", "", colnames(emu_ont))
+
+taxa_ont <- taxa_ont %>% filter(Genus %in% colnames(emu_ont))
+```
+```{r}
+###PACBIO FULL
+taxa_pac_f <- read.csv("path/to/taxonomy.tsv", sep = "\t")
+
+taxa_pac_f[taxa_pac_f == ""] <- NA
+taxa_pac_f <- rename(taxa_pac_f, Genus = "genus", Family = "family", Order = "order", Class = "class", Phylum = "phylum", Kingdom = "superkingdom")
+taxa_pac_f <- taxa_pac_f[, 6:1]
+taxa_pac_f$Genus <- gsub("^X", "", taxa_pac_f$Genus)
+
+emu_pac_f <- read.csv("path/to/emu.tsv", sep = "\t")
+emu_pac_f <- triplet_filter(emu = emu_pac_f)
+colnames(emu_pac_f) <- gsub("^X", "", colnames(emu_pac_f))
+
+taxa_pac_f <- taxa_pac_f %>% filter(Genus %in% colnames(emu_pac_f))
+
+```
+```{r}
+###PACBIO V4
+taxa_p_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+taxa_p_v4 <- rownames_to_column(taxa_p_v4)
+
+meta_pac <- vroom::vroom("path/to/metadata_pacbio.csv", delim = ";")
+meta_pac <- as.data.frame(meta_pac)
+meta_pac$barcode <- gsub("\\.1", "", meta_pac$barcode)
+meta_pac <- meta_pac[-c(1:18), ]
+emu_p_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+emu_p_v4 <- as.data.frame(emu_p_v4)
+emu_p_v4 <- emu_p_v4 %>% filter(V1 %in% meta_pac$barcode)
+rownames(emu_p_v4) <- emu_p_v4$V1
+emu_p_v4 <- emu_p_v4[-1]
+zero_sum_columns <- colSums(emu_p_v4[, sapply(emu_p_v4, is.numeric)]) == 0
+emu_p_v4 <- emu_p_v4[, !zero_sum_columns]
+
+taxa_p_v4 <- taxa_p_v4 %>% filter(rowname %in% colnames(emu_p_v4))
+emu_p_v4 <- reshape_to_emu(taxa_p_v4, emu = emu_p_v4)
+emu_p_v4 <- triplet_filter(emu_p_v4)
+
+taxa_p_v4 <- unique(taxa_p_v4[-1]) %>% filter(!is.na(Genus))
+taxa_p_v4$Genus <- gsub("^X", "", taxa_p_v4$Genus)
+colnames(emu_p_v4) <- gsub("^X", "", colnames(emu_p_v4))
+
+taxa_p_v4 <- taxa_p_v4 %>% filter(Genus %in% colnames(emu_p_v4))
+```
+```{r}
+###PACBIO V3-V4
+taxa_p_v3v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+taxa_p_v3v4 <- rownames_to_column(taxa_p_v3v4)
+
+emu_p_v3v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+emu_p_v3v4 <- as.data.frame(emu_p_v3v4)
+emu_p_v3v4 <- emu_p_v3v4 %>% filter(V1 %in% meta_pac$barcode)
+rownames(emu_p_v3v4) <- emu_p_v3v4$V1
+emu_p_v3v4 <- emu_p_v3v4[-1]
+zero_sum_columns <- colSums(emu_p_v3v4[, sapply(emu_p_v3v4, is.numeric)]) == 0
+emu_p_v3v4 <- emu_p_v3v4[, !zero_sum_columns]
+
+taxa_p_v3v4 <- taxa_p_v3v4 %>% filter(rowname %in% colnames(emu_p_v3v4))
+emu_p_v3v4 <- reshape_to_emu(taxa_p_v3v4, emu = emu_p_v3v4)
+emu_p_v3v4 <- triplet_filter(emu_p_v3v4)
+
+taxa_p_v3v4 <- unique(taxa_p_v3v4[-1]) %>% filter(!is.na(Genus))
+taxa_p_v3v4$Genus <- gsub("^X", "", taxa_p_v3v4$Genus)
+colnames(emu_p_v3v4) <- gsub("^X", "", colnames(emu_p_v3v4))
+
+taxa_p_v3v4 <- taxa_p_v3v4 %>% filter(Genus %in% colnames(emu_p_v3v4))
+```
+```{r}
+###ILLUMINA V4
+taxa_i_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+taxa_i_v4 <- rownames_to_column(taxa_i_v4)
+
+emu_i_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+emu_i_v4 <- as.data.frame(emu_i_v4)
+rownames(emu_i_v4) <- emu_i_v4$V1
+emu_i_v4 <- emu_i_v4[-1]
+
+emu_i_v4 <- reshape_to_emu(taxa_i_v4, emu = emu_i_v4)
+emu_i_v4 <- triplet_filter(emu_i_v4)
+
+taxa_i_v4 <- unique(taxa_i_v4[-1]) %>% filter(!is.na(Genus))
+taxa_i_v4$Genus <- gsub("^X", "", taxa_i_v4$Genus)
+colnames(emu_i_v4) <- gsub("^X", "", colnames(emu_i_v4))
+
+taxa_i_v4 <- taxa_i_v4 %>% filter(Genus %in% colnames(emu_i_v4))
+```
+```{r}
+###ILLUMINA V3-V4
+taxa_i_v3v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+taxa_i_v3v4 <- rownames_to_column(taxa_i_v3v4)
+
+emu_i_v3v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+emu_i_v3v4 <- as.data.frame(emu_i_v3v4)
+rownames(emu_i_v3v4) <- emu_i_v3v4$V1
+emu_i_v3v4 <- emu_i_v3v4[-1]
+
+emu_i_v3v4 <- reshape_to_emu(taxa_i_v3v4, emu = emu_i_v3v4)
+emu_i_v3v4 <- triplet_filter(emu_i_v3v4)
+
+taxa_i_v3v4 <- unique(taxa_i_v3v4[-1]) %>% filter(!is.na(Genus))
+taxa_i_v3v4$Genus <- gsub("^X", "", taxa_i_v3v4$Genus)
+colnames(emu_i_v3v4) <- gsub("^X", "", colnames(emu_i_v3v4))
+
+taxa_i_v3v4 <- taxa_i_v3v4 %>% filter(Genus %in% colnames(emu_i_v3v4))
+```
+#remove odd symbols from data
+```{r}
+taxa_i_v3v4 <- rm_taxa(taxa_i_v3v4)
+taxa_i_v4 <- rm_taxa(taxa_i_v4)
+taxa_p_v3v4 <- rm_taxa(taxa_p_v3v4)
+taxa_p_v4 <- rm_taxa(taxa_p_v4)
+
+emu_i_v3v4 <- rm_emu(emu_i_v3v4)
+emu_i_v4 <- rm_emu(emu_i_v4)
+emu_p_v3v4 <- rm_emu(emu_p_v3v4)
+emu_p_v4 <- rm_emu(emu_p_v4)
+```
+
+
+#make heatmap data
+```{r}
+taxa <- rbind(taxa_ont, taxa_pac_f, taxa_p_v4, taxa_p_v3v4, taxa_i_v4, taxa_i_v3v4)
+taxa <- unique(taxa)
+taxa_ph <- taxa %>%
+  group_by(Phylum) %>%
+  summarise(n = n()) 
+taxa_ph <- taxa_ph[order(taxa_ph$n, decreasing = T), ]
+```
+```{r}
+taxa$Phylum <- ifelse(taxa$Phylum %in% taxa_ph$Phylum[1:10], taxa$Phylum, "Others")
+
+heat_data <- taxa
+heat_data$`ONT Full` <- ifelse(heat_data$Genus %in% taxa_ont$Genus, 1, 0)
+heat_data$`PacBio Full` <- ifelse(heat_data$Genus %in% taxa_pac_f$Genus, 1, 0)
+heat_data$`PacBio V4` <- ifelse(heat_data$Genus %in% taxa_p_v4$Genus, 1, 0)
+heat_data$`PacBio V3-V4` <- ifelse(heat_data$Genus %in% taxa_p_v3v4$Genus, 1, 0)
+heat_data$`Illumina V4` <- ifelse(heat_data$Genus %in% taxa_i_v4$Genus, 1, 0)
+heat_data$`Illumina V3-V4` <- ifelse(heat_data$Genus %in% taxa_i_v3v4$Genus, 1, 0)
+
+heat_data$Phylum <- factor(heat_data$Phylum, levels = c(taxa_ph$Phylum[1:10], "Others"))
+
+row.names(heat_data) <- heat_data$Genus
+heat_data <- heat_data[order(heat_data$Phylum, heat_data$Genus), ]
+heat_data <- heat_data[-c(1:6)]
+
+annotRow <- taxa[c("Phylum", "Genus")]
+annotRow <- annotRow %>% filter(annotRow$Genus %in% rownames(heat_data))
+annotRow[is.na(annotRow)] <- "Unknown"
+annotRow <- annotRow[order(annotRow$Phylum), ]
+annotRow <- unique(annotRow)
+annotRow <- annotRow[!duplicated(annotRow$Genus), ]
+rownames(annotRow) <- annotRow$Genus
+annotRow <- annotRow[-2]
+annotRow$Phylum <- factor(annotRow$Phylum, levels = c(taxa_ph$Phylum[1:10], "Others"))
+
+annotColors <- list(Phylum=c(Proteobacteria = "#A93226", 
+             Actinobacteriota = "#7D3C98", 
+             Firmicutes = "#2471A3", 
+             Bacteroidota = "#17A589",
+             Planctomycetota = "#FFC976",
+             Chloroflexota = "#CB7105",
+             Acidobacteriota = "#355630",
+             Myxococcota = "#34CED1",
+             Verrucomicrobiota = "#B7A1CB", 
+             Patescibacteria = "#FF742E", 
+             Others = "white")
+    )
+ 
+```
+#heat map all
+```{r fig.height=8, fig.width=8}
+heatmap_tech <- pheatmap(heat_data, 
+                                show_colnames = T,
+                                show_rownames = F,
+                                #annotation_col = annotCol[2], 
+                                annotation_row = annotRow,
+                                annotation_colors = annotColors, 
+                                cluster_cols = F,
+                                cluster_rows = T,
+                                gaps_col = c(2,2, 4,4, 2, 4),
+                                #cutree_rows = 3,
+                                color = c("gray", "blue"),
+                                angle_col = 45,
+                                breaks = c(0, 0.5, 1)
+)
+heatmap_tech
+```
+#save hetamap all
+```{r}
+ggsave("path/to/heat.png", plot = heatmap_tech, device = "png", width = 8, height = 8)
+```
+
