@@ -1,0 +1,308 @@
+#activate libraries
+```{r}
+library(RColorBrewer)
+library(MicrobiotaProcess)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(tidytree)
+library(data.table)
+library(DT)
+library(tidyr)
+library(aplot)
+library(patchwork)
+library(dplyr)
+library(tibble)
+```
+#make functions
+```{r}
+#filter by triplets
+triplet_filter <- function(emu) {
+  emu$bio_id <- rep(1:(length(rownames(emu))/3), each = 3) 
+  emu_cols <- emu %>%
+    group_by(bio_id) %>%
+    summarise(across(where(is.numeric), ~ sum(.x > 0, na.rm = TRUE))) %>%
+    select(where(~ any(.x == 3, na.rm = TRUE))) %>%
+    colnames()
+  emu <- emu[emu_cols[-1]]
+  return(emu)
+  
+}
+
+#reshape
+reshape_to_emu <- function(taxa, emu) {
+  
+  #emu
+  emu <- as.data.frame(t(emu))
+  emu <- rownames_to_column(emu)
+  emu <- left_join(taxa[c(1,7)], emu, by = "rowname")
+  emu <- emu[-1]
+  emu <- emu %>% 
+    group_by(Genus) %>%
+    summarise(across(where(is.numeric), sum))
+  emu <- emu %>% filter(!is.na(Genus))
+  emu <- as.data.frame(emu)
+  rownames(emu) <- emu$Genus
+  emu <- emu[-1]
+  emu <- as.data.frame(t(emu))
+  return(emu)
+}
+
+#remove odd symbols taxa
+rm_taxa <- function(taxa) {
+  taxa$Genus <- gsub(" ", "", taxa$Genus)
+  taxa$Genus <- gsub("\\[|\\]", "", taxa$Genus)
+  taxa$Genus <- gsub("-", "_", taxa$Genus)
+  return(taxa)
+}
+#remove odd symbols emu
+rm_emu <- function(emu) {
+  colnames(emu) <- gsub(" ", "", colnames(emu))
+  colnames(emu) <- gsub("\\[|\\]", "", colnames(emu))
+  colnames(emu) <- gsub("-", "_", colnames(emu))
+  return(emu)
+}
+```
+#import data
+```{r}
+#Nanopore
+meta_np <-read.csv("path/to/metadata.csv", colClasses = "character", sep = ",")
+meta_np <- meta_np[1:48, ]
+meta_np$technology <- "ONT"
+meta_np$sampleid <- paste(meta_np$sampleid, "ONT", sep = "_")
+barcodes_np <- meta_np$barcode
+
+emu_np <- read.csv("path/to/emu_all.tsv", sep = "\t")
+emu_np <- emu_np %>% filter(row.names(emu_np) %in% barcodes_np)
+numeric_columns_np <- sapply(emu_np, is.numeric)
+zero_sum_columns_np <- colSums(emu_np[, numeric_columns_np]) == 0
+emu_np <- emu_np[, !zero_sum_columns_np]
+col_names_np <- colnames(emu_np)
+emu_np <- rownames_to_column(emu_np)
+
+taxonomy_np <- read.csv("path/to/taxonomy_all.tsv", sep = "\t")
+taxonomy_np[taxonomy_np == ""] <- NA
+taxonomy_np <- taxonomy_np %>% filter(species %in% col_names_np)
+
+#PacBio
+meta_pb <- read.csv("path/to/metadata.csv", colClasses = "character", sep = ",")
+meta_pb$technology <- "PacBio"
+meta_pb$sampleid <- paste(meta_pb$sampleid, "PacBio", sep = "_")
+barcodes_pb <- meta_pb$barcode
+
+emu_pb <- read.csv("path/to/emu_all.tsv", sep = "\t")
+emu_pb <- emu_pb %>% filter(row.names(emu_pb) %in% barcodes_pb)
+#remove zero sum columns
+numeric_columns_pb <- sapply(emu_pb, is.numeric)
+zero_sum_columns_pb <- colSums(emu_pb[, numeric_columns_pb]) == 0
+emu_pb <- emu_pb[, !zero_sum_columns_pb]
+col_names_pb <- colnames(emu_pb) 
+emu_pb <- rownames_to_column(emu_pb)
+
+taxonomy_pb <- read.csv("path/to/taxonomy_all.tsv", sep = "\t")
+taxonomy_pb[taxonomy_pb == ""] <- NA
+#remove row with taxa with zero reads
+taxonomy_pb <- taxonomy_pb %>% filter(species %in% col_names_pb)
+
+emu_pb <- emu_pb[, c("rowname", taxonomy_pb$species)]
+```
+
+#merge and process data
+```{r}
+metadata <- rbind(meta_np, meta_pb)
+
+taxonomy <- rbind(taxonomy_np, taxonomy_pb)
+taxonomy <- unique(taxonomy)
+
+
+colname_np <- colnames(emu_np)
+colname_pb <- colnames(emu_pb)
+common_taxa <- colname_np %in% colname_pb
+match_emu <- colname_np[common_taxa]
+
+emu <- full_join(emu_np, emu_pb, by = match_emu)
+emu[is.na(emu)] <- 0
+rownames(emu) <- emu$rowname
+emu <- emu[, 2:length(colnames(emu))]
+
+#remove samples with few reads
+emu <- emu[names(rowSums(emu))[rowSums(emu) > 34999], ]
+
+metadata <- metadata %>% filter(barcode %in% rownames(emu))
+```
+
+# import data as phyloseq object
+```{r}
+ps.taxonomy <- taxonomy
+rownames(ps.taxonomy) <- ps.taxonomy$species
+
+ps.meta <- metadata
+rownames(ps.meta) <- ps.meta$barcode
+
+ps <- phyloseq(otu_table(emu, taxa_are_rows = F), phyloseq::tax_table(as.matrix(ps.taxonomy[-1][c(6:1)])), sample_data(ps.meta[-1]))
+```
+
+# import data as MicrobiotaProcess
+```{r}
+ps %>% as.MPSE() -> mpse
+mpse <- mpse %>% mp_filter_taxa(.abundance = Abundance, min.abun = 1, min.prop = 0.01)
+mpse %<>% mp_rrarefy()
+
+
+mpse_ont <- mpse %>% dplyr::filter(technology == "ONT")
+mpse_pac <- mpse %>% dplyr::filter(technology == "PacBio")
+
+mpse_ont@colData@rownames <- gsub("_ONT_50", "", mpse_ont@colData@rownames)
+mpse_pac@colData@rownames <- gsub("S11151Nr", "", mpse_pac@colData@rownames)
+mpse_pac@colData@rownames <- gsub("\\.1$", "", mpse_pac@colData@rownames)
+```
+#PacBio + ONT
+```{r}
+cols <- c('#fcc751ff', '#00c7bfff')
+mpse %<>%
+  mp_cal_rarecurve(.abundance=RareAbundance, chunks=400)
+
+
+prare1 <- mpse %>% 
+  mp_plot_rarecurve(
+    .rare = RareAbundanceRarecurve, 
+    .alpha = c(Observe, Shannon), 
+    .group = technology,
+    plot.group = TRUE
+    )+
+  scale_color_manual(values = cols, name = "Technology")+ 
+  scale_fill_manual(values = cols, name = "Technology") + 
+  theme_bw()+
+  theme(
+    axis.text=element_text(size=8), 
+    panel.grid=element_blank(), 
+    strip.background = element_rect(colour=NA,fill="grey"), 
+    strip.text.x = element_text(face="bold")
+    )+
+  xlab("Number of reads")
+prare1
+
+```
+
+
+#ONT
+#all
+```{r}
+cols <- c('#fcc751ff', '#00c7bfff')
+mpse_ont %<>%
+  mp_cal_rarecurve(.abundance=RareAbundance, chunks=300)
+
+
+prare_ont1 <- mpse_ont %>% 
+  mp_plot_rarecurve(
+    .rare = RareAbundanceRarecurve, 
+    .alpha = c(Shannon), 
+    .group = technology,
+    plot.group = TRUE
+    )+
+  scale_color_manual(values = cols, name = "")+ 
+  scale_fill_manual(values = cols, name = "") + 
+  theme_bw()+
+  scale_x_continuous(breaks = seq(0, 35000, by = 5000)) +
+  theme(
+    axis.text.x=element_text(size=8, angle = 45, hjust = 1), 
+    strip.text = element_blank(),
+    legend.position = "none",
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )+
+  xlab("Number of reads") +
+  ylab("Shannon index") +
+  labs(title = "ONT")
+prare_ont1
+```
+#for each sample
+```{r}
+prare_ont2 <- mpse_ont %>% mp_plot_rarecurve(
+  .rare = RareAbundanceRarecurve,
+  .alpha = c(Shannon), )+
+  theme_bw() +
+  theme(
+    axis.text.x=element_text(size=8, angle = 45, hjust = 1),
+    strip.text = element_blank(),
+    legend.key.width = unit(0.3, "cm"), 
+    legend.key.height = unit(0.3, "cm"),
+    legend.spacing.y = unit(0.01,"cm"), 
+    legend.text = element_text(size=4)
+    ) +
+  xlab("Number of reads") +
+  ylab("Shannon index")
+prare_ont2
+```
+
+#PacBio
+```{r}
+colss <- c('#00c7bfff', '#fcc751ff')
+mpse_pac %<>%
+  mp_cal_rarecurve(.abundance=RareAbundance, chunks=300)
+
+
+
+prare_pac1 <- mpse_pac %>% 
+  mp_plot_rarecurve(
+    .rare = RareAbundanceRarecurve, 
+    .alpha = c(Shannon), 
+    .group = technology,
+    plot.group = TRUE
+    )+
+  scale_color_manual(values = colss, name = "")+ 
+  scale_fill_manual(values = colss, name = "") + 
+  theme_bw()+
+  scale_x_continuous(breaks = seq(0, 35000, by = 5000)) +
+  theme(
+    axis.text.x=element_text(size=8, angle = 45, hjust = 1), 
+    strip.text = element_blank(),
+    legend.position = "none",
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )+
+  xlab("Number of reads") +
+  ylab("Shannon index") +
+  labs(title = "PacBio")
+prare_pac1
+```
+```{r}
+prare_pac2 <- mpse_pac %>% mp_plot_rarecurve(
+  .rare = RareAbundanceRarecurve,
+  .alpha = c(Shannon), )+
+  theme_bw() +
+  theme(
+    strip.text = element_blank(),
+    axis.text.x=element_text(size=8, angle = 45, hjust = 1),
+    legend.key.width = unit(0.3, "cm"), 
+    legend.key.height = unit(0.3, "cm"),
+    legend.spacing.y = unit(0.01,"cm"), 
+    legend.text = element_text(size=4)
+    ) +
+  xlab("Number of reads") +
+  ylab("Shannon index")
+prare_pac2
+```
+
+```{r fig.height=6, fig.width=8}
+prare1 <- aplot::plot_list(prare_ont1, prare_pac1, 
+                          nrow = 1, labels = c ("A", "B"))
+prare1
+```
+```{r fig.height=6, fig.width=8}
+prare2 <- aplot::plot_list( 
+  prare_ont2, prare_pac2, 
+  nrow = 1, labels = c ("C", "D"))
+prare2
+```
+
+#save pics
+```{r}
+ggsave("path/to/saturation_all.pdf", plot = prare1, device = "pdf", width = 8, height = 4)
+ggsave("path/to/saturation_samples.pdf", plot = prare2, device = "pdf", width = 8, height = 4)
+```
+
