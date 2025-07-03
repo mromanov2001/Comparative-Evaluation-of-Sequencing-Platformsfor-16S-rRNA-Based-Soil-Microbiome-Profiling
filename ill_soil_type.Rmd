@@ -1,0 +1,108 @@
+#activate libraries
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+library(MicrobiotaProcess)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(ComplexUpset)
+library(tidytree)
+library(data.table)
+library(DT)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggVennDiagram)
+library(aplot)
+library(patchwork)
+library(vroom)
+library(readr)
+library(data.table)
+library(shadowtext)
+```
+
+#import data
+```{r}
+#illumina
+samdf_ill <- vroom::vroom("path/to/metadata.csv", delim = ",")
+samdf_ill <- as.data.frame(samdf_ill)
+samdf_ill$sampleid <- paste0("V3-", samdf_ill$sampleid)
+samdf_ill$barcode <- paste0("V3-", samdf_ill$barcode)
+rownames(samdf_ill) <- samdf_ill$barcode
+
+samdf_ill <- samdf_ill[-1]
+#samdf_ill$technology <- "Illumina"
+samdf_ill <- samdf_ill[, c(1:4)]
+samdf_ill <- samdf_ill[1:48, ]
+seqtab.nochim_ill <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_ill <- as.data.frame(seqtab.nochim_ill)
+rownames(seqtab.nochim_ill) <- seqtab.nochim_ill$V1
+seqtab.nochim_ill <- seqtab.nochim_ill[, -1]
+taxa_ill <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+
+```
+
+#create phyloseq objects
+```{r}
+ps <- phyloseq(otu_table(seqtab.nochim_ill, taxa_are_rows=FALSE), phyloseq::tax_table(as.matrix(taxa_ill)), sample_data(samdf_ill))
+
+```
+#create mpse objects
+```{r}
+ps %>% as.MPSE() -> mpse
+mpse <- mpse %>% mp_filter_taxa(.abundance = Abundance, min.abun = 1, min.prop = 0.01)
+mpse %<>% mp_rrarefy()
+```
+
+
+
+
+
+# beta-diversity (Bray-Curtis dissimilarity distance) PCoA group
+```{r}
+mpse %<>% mp_decostand(.abundance=Abundance)
+mpse %<>% mp_cal_dist(.abundance=hellinger, distmethod="bray")
+mpse %<>% mp_cal_pcoa(.abundance=hellinger, distmethod="bray")
+
+bray_pcoa_group <- mpse %>%
+    mp_plot_ord(
+        .ord = pcoa, 
+        .group = soil_type,
+        .color = soil_type, 
+        .size = 1.75,
+        .alpha = 1,
+        ellipse = TRUE,
+        show.legend = F
+    )+
+    scale_fill_brewer(palette = "Set1")+
+    scale_color_brewer(palette = "Set1")+
+    theme(axis.text.x = element_text(angle = 45, size = 10, colour = "black", hjust = 1), 
+          #axis.title.x = element_text(margin = margin(t = -35)),
+          #axis.title.y = element_text(margin = margin(r = -35)),
+          title = element_text(size = 13),
+          legend.position = "right") +
+  annotate("text", x = -0.2, y = -0.32, label = "Pr(>F) = 1e-04", color = "red", size = 3)
+bray_pcoa_group
+```
+
+
+# Permutational Multivariate Analysis of Variance (group)
+```{r}
+mpse %<>% mp_decostand(.abundance=Abundance, method = "hellinger")
+mpse %<>% mp_cal_pca(.abundance = hellinger)
+mpse %<>% mp_adonis(.abundance = hellinger, distmethod = "bray",
+.formula = ~soil_type, permutation = 9999, action = "add")
+mpse %>% mp_extract_internal_attr(name=adonis) %>% mp_fortify()
+```
+# betta analysis save
+```{r fig.height=12, fig.width=12}
+ggsave("path/to/betta.pdf", plot = bray_pcoa_group, device = "pdf", width = 12, height = 6)
+```
+
