@@ -1,0 +1,200 @@
+#activate packages 
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+library(MicrobiotaProcess)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(ComplexUpset)
+library(tidytree)
+library(data.table)
+library(DT)
+library(tibble)
+library(tidyr)
+library(ggVennDiagram)
+library(aplot)
+library(patchwork)
+library(microbiomeMarker)
+library(dplyr)
+```
+
+#Illumina
+#import data
+```{r}
+meta_ill <- vroom::vroom("path/to/metadata.csv", delim = ",")
+meta_ill <- as.data.frame(meta_ill)
+meta_ill$sampleid <- paste0("V3-", meta_ill$sampleid)
+meta_ill$barcode <- paste0("V3-", meta_ill$barcode)
+rownames(meta_ill) <- meta_ill$barcode
+meta_ill <- meta_ill[-1]
+meta_ill$technology <- "Illumina"
+meta_ill <- meta_ill[, c(1:4, 8)]
+meta_ill <- meta_ill[1:48, ]
+meta_ill$technology <- "Illumina"
+seqtab.nochim_ill <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_ill <- as.data.frame(seqtab.nochim_ill)
+rownames(seqtab.nochim_ill) <- seqtab.nochim_ill$V1
+seqtab.nochim_ill <- seqtab.nochim_ill[, -1]
+taxonomy_ill <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+taxonomy_ill <- rownames_to_column(taxonomy_ill)
+```
+
+#reshape data
+```{r}
+#taxa
+taxa_ill <- unique(taxonomy_ill[-1]) %>% filter(!is.na(Genus))
+rownames(taxa_ill) <- 1:length(rownames(taxa_ill))
+
+#emu
+emu_ill <- as.data.frame(t(seqtab.nochim_ill))
+emu_ill <- rownames_to_column(emu_ill)
+emu_ill <- left_join(taxonomy_ill[c(1,7)], emu_ill, by = "rowname")
+emu_ill <- emu_ill[-1]
+emu_ill <- emu_ill %>% 
+  group_by(Genus) %>%
+  summarise(across(where(is.numeric), sum))
+emu_ill <- emu_ill %>% filter(!is.na(Genus))
+emu_ill <- as.data.frame(emu_ill)
+rownames(emu_ill) <- emu_ill$Genus
+emu_ill <- emu_ill[-1]
+emu_ill <- as.data.frame(t(emu_ill))
+emu_ill <- rownames_to_column(emu_ill)
+```
+
+#Nanopore
+```{r}
+meta_np <-read.csv("path/to/metadata.csv", colClasses = "character", sep = ",")
+meta_np$technology <- "ONT"
+meta_np$sampleid <- paste(meta_np$sampleid, "ONT", sep = "_")
+barcodes_np <- meta_np$barcode
+meta_np <- meta_np[-2]
+colnames(meta_np) <- colnames(meta_ill)
+
+emu_np <- read.csv("path/to/emu.tsv", sep = "\t")
+emu_np <- emu_np %>% filter(row.names(emu_np) %in% barcodes_np)
+numeric_columns_np <- sapply(emu_np, is.numeric)
+zero_sum_columns_np <- colSums(emu_np[, numeric_columns_np]) == 0
+emu_np <- emu_np[, !zero_sum_columns_np]
+col_names_np <- colnames(emu_np)
+emu_np <- rownames_to_column(emu_np)
+
+taxonomy_np <- read.csv("path/to/taxonomy.tsv", sep = "\t")
+taxonomy_np[taxonomy_np == ""] <- NA
+taxonomy_np <- taxonomy_np[6:1]
+colnames(taxonomy_np) <- colnames(taxa_ill)
+```
+
+#merge and process data
+```{r}
+metadata <- rbind(meta_np, meta_ill)
+
+taxonomy <- rbind(taxonomy_np, taxa_ill)
+taxonomy <- unique(taxonomy)
+
+
+emu <- full_join(emu_np, emu_ill, by = colnames(emu_np)[colnames(emu_np) %in% colnames(emu_ill)])
+emu[is.na(emu)] <- 0
+rownames(emu) <- emu$rowname
+emu <- emu[, 2:length(colnames(emu))]
+
+```
+
+#triplet filtering
+```{r}
+emu$bio_id <- rep(1:32, each = 3) 
+emu_cols <- emu %>%
+  group_by(bio_id) %>%
+  summarise(across(where(is.numeric), ~ sum(.x > 0, na.rm = TRUE))) %>%
+  select(where(~ any(.x == 3, na.rm = TRUE))) %>%
+  colnames()
+emu <- emu[emu_cols[-1]]
+colnames(emu) <- gsub("^X", "", colnames(emu))
+taxonomy$Genus <- gsub("^X", "", taxonomy$Genus)
+taxonomy <- taxonomy %>% filter(Genus %in% colnames(emu))
+colnames(emu)[!(colnames(emu) %in% taxonomy$Genus)]
+```
+
+
+# import data as phyloseq object
+```{r}
+ps.taxonomy <- taxonomy
+rownames(ps.taxonomy) <- ps.taxonomy$Genus
+
+ps.meta <- metadata
+rownames(ps.meta) <- ps.meta$sampleid
+
+ps <- phyloseq(otu_table(emu, taxa_are_rows = F), phyloseq::tax_table(as.matrix(ps.taxonomy[-6])), sample_data(ps.meta[-1]))
+```
+
+# import data as MicrobiotaProcess
+```{r}
+ps %>% as.MPSE() -> mpse
+mpse <- mpse %>% mp_filter_taxa(.abundance = Abundance, min.abun = 1, min.prop = 0.05)
+mpse %<>% mp_rrarefy()
+```
+
+# alpha-diversity technology
+```{r fig.height=4, fig.width=4}
+mpse %<>% mp_cal_alpha(.abundance=RareAbundance)
+
+alpha_plot_group <- mpse %>% 
+    mp_plot_alpha(
+        .group=technology, 
+        .alpha=c(Shannon)
+    )+
+    scale_fill_brewer(palette = "Set1")+
+    scale_color_brewer(palette = "Set1")+
+    theme(axis.text.x = element_text(angle = 45, size = 15, colour = "black", hjust = 1), 
+          title = element_text(size = 13),
+          legend.position = "none")
+alpha_plot_group
+```
+#save alpha
+```{r}
+ggsave("path/to/alpha.pdf", plot = alpha_plot_group, device = "pdf", width = 4, height = 4)
+```
+
+#Venn new 
+```{r fig.height=4, fig.width=6}
+venn_plot <- ggvenn::ggvenn(list(ONT = gsub("^X", "", taxonomy_np$Genus)[gsub("^X", "", taxonomy_np$Genus) %in% taxonomy$Genus], 
+                                 Illumina = gsub("^X", "", taxa_ill$Genus)[gsub("^X", "", taxa_ill$Genus) %in% taxonomy$Genus]),
+                            text_size = 6, fill_color = c("red", "green"), fill_alpha = 0.6)
+venn_plot
+```
+#save venn
+```{r}
+ggsave("path/to/Venn.pdf", plot = venn_plot, device = "pdf", width = 6, height = 4)
+```
+
+#LefSe
+```{r}
+ps2 <- phyloseq(otu_table(emu, taxa_are_rows = F), phyloseq::tax_table(as.matrix(ps.taxonomy)), sample_data(ps.meta[-1]))
+
+mm_lefse <- run_lefse(
+    ps2,
+    wilcoxon_cutoff = 0.01,
+    group = "technology",
+    taxa_rank = "Genus",
+    kw_cutoff = 0.01,
+    multigrp_strat = TRUE,
+    lda_cutoff = 4
+)
+
+```
+#bar
+```{r fig.height=5, fig.width=10}
+lefse_bar <- plot_ef_bar(mm_lefse)
+lefse_bar
+```
+#save lefse
+```{r fig.height=15, fig.width=10}
+ggsave("path/to/lefse_bar.pdf", plot = lefse_bar, device = "pdf", width = 10, height = 5)
+```
+

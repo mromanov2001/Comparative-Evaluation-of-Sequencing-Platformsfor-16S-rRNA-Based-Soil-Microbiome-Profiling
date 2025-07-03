@@ -1,0 +1,330 @@
+#activate libraries
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+library(MicrobiotaProcess)
+library(phyloseq)
+library(ggplot2)
+library(ggtree)
+library(ggtreeExtra)
+library(tidytree)
+library(ggstar)
+library(forcats)
+library(ggpubr)
+library(coin)
+library(ComplexUpset)
+library(tidytree)
+library(data.table)
+library(DT)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggVennDiagram)
+library(aplot)
+library(patchwork)
+library(vroom)
+library(readr)
+library(data.table)
+library(shadowtext)
+```
+
+#import v3_v4
+```{r}
+#pacbio
+samdf_pac_v3_v4 <- vroom::vroom("path/to/metadata_pacbio.csv", delim = ";")
+samdf_pac_v3_v4 <- as.data.frame(samdf_pac_v3_v4)
+samdf_pac_v3_v4$sampleid <- paste0("V3-V4-", samdf_pac_v3_v4$sampleid)
+samdf_pac_v3_v4$barcode <- paste0("V3-V4-", samdf_pac_v3_v4$barcode)
+samdf_pac_v3_v4$barcode <- gsub("\\.1", "", samdf_pac_v3_v4$barcode)
+rownames(samdf_pac_v3_v4) <- samdf_pac_v3_v4$barcode
+samdf_pac_v3_v4 <- samdf_pac_v3_v4[-1]
+samdf_pac_v3_v4$technology <- "PacBio V3-V4"
+seqtab.nochim_pac_v3_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_pac_v3_v4 <- as.data.frame(seqtab.nochim_pac_v3_v4)
+seqtab.nochim_pac_v3_v4$V1 <- paste0("V3-V4-", seqtab.nochim_pac_v3_v4$V1)
+rownames(seqtab.nochim_pac_v3_v4) <- seqtab.nochim_pac_v3_v4$V1
+seqtab.nochim_pac_v3_v4 <- seqtab.nochim_pac_v3_v4[, -1]
+taxa_pac_v3_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+
+#illumina
+samdf_ill_v3_v4 <- vroom::vroom("path/to/metadata.csv", delim = ",")
+samdf_ill_v3_v4 <- as.data.frame(samdf_ill_v3_v4)
+samdf_ill_v3_v4$sampleid <- paste0("V3-", samdf_ill_v3_v4$sampleid)
+samdf_ill_v3_v4$barcode <- paste0("V3-", samdf_ill_v3_v4$barcode)
+rownames(samdf_ill_v3_v4) <- samdf_ill_v3_v4$barcode
+samdf_ill_v3_v4 <- samdf_ill_v3_v4[-1]
+samdf_ill_v3_v4$technology <- "Illumina V3-V4"
+samdf_ill_v3_v4 <- samdf_ill_v3_v4[, c(1:4, 8)]
+seqtab.nochim_ill_v3_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_ill_v3_v4 <- as.data.frame(seqtab.nochim_ill_v3_v4)
+rownames(seqtab.nochim_ill_v3_v4) <- seqtab.nochim_ill_v3_v4$V1
+seqtab.nochim_ill_v3_v4 <- seqtab.nochim_ill_v3_v4[, -1]
+taxa_ill_v3_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+
+```
+
+#process v3_v4
+```{r}
+taxa_v3_v4 <- rbind(taxa_ill_v3_v4, taxa_pac_v3_v4)
+metadata_v3_v4 <- rbind(samdf_ill_v3_v4, samdf_pac_v3_v4)
+metadata_v3_v4 <- metadata_v3_v4 %>% filter(!is.na(soil_type)) 
+metadata_v3_v4 <- metadata_v3_v4 %>% filter(soil_type != "Kazan black soil leached")
+
+seqtab.nochim_pac_v3_v4 <- seqtab.nochim_pac_v3_v4 %>% filter(rownames(seqtab.nochim_pac_v3_v4) %in% rownames(metadata_v3_v4))
+
+seqtab.nochim_ill_v3_v4 <- rownames_to_column(seqtab.nochim_ill_v3_v4)
+seqtab.nochim_pac_v3_v4 <- rownames_to_column(seqtab.nochim_pac_v3_v4)
+
+seqtab.nochim_v3_v4 <- full_join(seqtab.nochim_ill_v3_v4, seqtab.nochim_pac_v3_v4, by = "rowname")
+seqtab.nochim_v3_v4[is.na(seqtab.nochim_v3_v4)] <- 0
+rownames(seqtab.nochim_v3_v4) <- seqtab.nochim_v3_v4$rowname 
+seqtab.nochim_v3_v4 <- seqtab.nochim_v3_v4[, -1]
+
+#remove zero sum columns 
+numeric_columns <- sapply(seqtab.nochim_v3_v4, is.numeric)
+zero_sum_columns <- colSums(seqtab.nochim_v3_v4[, numeric_columns]) == 0
+seqtab.nochim_v3_v4 <- seqtab.nochim_v3_v4[, !zero_sum_columns]
+col_names <- colnames(seqtab.nochim_v3_v4)
+
+taxa_v3_v4 <- taxa_v3_v4[col_names, ]
+```
+
+#import v4
+```{r}
+#pacbio
+samdf_pac_v4 <- vroom::vroom("path/to/metadata_pacbio.csv", delim = ";")
+samdf_pac_v4 <- as.data.frame(samdf_pac_v4)
+samdf_pac_v4$sampleid <- paste0("V4-", samdf_pac_v4$sampleid)
+samdf_pac_v4$barcode <- paste0("V4-", samdf_pac_v4$barcode)
+samdf_pac_v4$barcode <- gsub("\\.1", "", samdf_pac_v4$barcode)
+rownames(samdf_pac_v4) <- samdf_pac_v4$barcode
+samdf_pac_v4 <- samdf_pac_v4[-1]
+samdf_pac_v4$technology <- "PacBio V4"
+seqtab.nochim_pac_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_pac_v4 <- as.data.frame(seqtab.nochim_pac_v4)
+seqtab.nochim_pac_v4$V1 <- paste0("V4-", seqtab.nochim_pac_v4$V1)
+rownames(seqtab.nochim_pac_v4) <- seqtab.nochim_pac_v4$V1
+seqtab.nochim_pac_v4 <- seqtab.nochim_pac_v4[, -1]
+taxa_pac_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+
+#illumina
+samdf_ill_v4 <- vroom::vroom("path/to/metadata.csv", delim = ",")
+samdf_ill_v4 <- as.data.frame(samdf_ill_v4)
+rownames(samdf_ill_v4) <- samdf_ill_v4$barcode
+samdf_ill_v4 <- samdf_ill_v4[-1]
+samdf_ill_v4$technology <- "Illumina V4"
+samdf_ill_v4 <- samdf_ill_v4[, c(1:4, 8)]
+seqtab.nochim_ill_v4 <- fread("path/to/seqtab.nochim.tsv", colClasses = "numeric")
+seqtab.nochim_ill_v4 <- as.data.frame(seqtab.nochim_ill_v4)
+rownames(seqtab.nochim_ill_v4) <- seqtab.nochim_ill_v4$V1
+seqtab.nochim_ill_v4 <- seqtab.nochim_ill_v4[, -1]
+taxa_ill_v4 <- read.csv("path/to/taxa.tsv", sep = "\t", row.names = 1)
+
+```
+
+#process v4
+```{r}
+taxa_v4 <- rbind(taxa_ill_v4, taxa_pac_v4)
+metadata_v4 <- rbind(samdf_ill_v4, samdf_pac_v4)
+metadata_v4 <- metadata_v4 %>% filter(!is.na(soil_type)) 
+metadata_v4 <- metadata_v4 %>% filter(soil_type != "Kazan black soil leached")
+
+seqtab.nochim_ill_v4 <- seqtab.nochim_ill_v4 %>% filter(rownames(seqtab.nochim_ill_v4) %in% rownames(metadata_v4))
+seqtab.nochim_pac_v4 <- seqtab.nochim_pac_v4 %>% filter(rownames(seqtab.nochim_pac_v4) %in% rownames(metadata_v4))
+
+seqtab.nochim_ill_v4 <- rownames_to_column(seqtab.nochim_ill_v4)
+seqtab.nochim_pac_v4 <- rownames_to_column(seqtab.nochim_pac_v4)
+
+seqtab.nochim_v4 <- full_join(seqtab.nochim_ill_v4, seqtab.nochim_pac_v4, by = "rowname")
+seqtab.nochim_v4[is.na(seqtab.nochim_v4)] <- 0
+rownames(seqtab.nochim_v4) <- seqtab.nochim_v4$rowname 
+seqtab.nochim_v4 <- seqtab.nochim_v4[, -1]
+
+#remove zero sum columns 
+numeric_columns <- sapply(seqtab.nochim_v4, is.numeric)
+zero_sum_columns <- colSums(seqtab.nochim_v4[, numeric_columns]) == 0
+seqtab.nochim_v4 <- seqtab.nochim_v4[, !zero_sum_columns]
+col_names <- colnames(seqtab.nochim_v4)
+
+taxa_v4 <- taxa_v4[col_names, ]
+```
+
+#merge all
+```{r}
+meta <- rbind(metadata_v4, metadata_v3_v4)
+taxa <- rbind(taxa_v4, taxa_v3_v4)
+
+seqtab.nochim_v4 <- rownames_to_column(seqtab.nochim_v4)
+seqtab.nochim_v3_v4 <- rownames_to_column(seqtab.nochim_v3_v4)
+
+
+
+seqtab.nochim <- full_join(seqtab.nochim_v4, seqtab.nochim_v3_v4, 
+                           by = "rowname")
+
+seqtab.nochim[is.na(seqtab.nochim)] <- 0
+rownames(seqtab.nochim) <- seqtab.nochim$rowname 
+seqtab.nochim <- seqtab.nochim[, -1]
+```
+
+#make it emu like and drop false genus
+```{r}
+#meta
+meta$bio_samples <- rep(1:64, each = 3)
+meta <- rownames_to_column(meta)
+rownames(meta) <- meta$rowname
+
+#taxa
+taxa <- rownames_to_column(taxa)
+taxa_emu <- unique(taxa[-1]) %>% filter(!is.na(Genus))
+rownames(taxa_emu) <- taxa_emu$Genus
+
+
+#emu
+emu <- as.data.frame(t(seqtab.nochim))
+emu <- rownames_to_column(emu)
+emu <- left_join(taxa[c(1,7)], emu, by = "rowname")
+emu <- emu[-1]
+emu <- emu %>% 
+  group_by(Genus) %>%
+  summarise(across(where(is.numeric), sum))
+emu <- emu %>% filter(!is.na(Genus))
+emu <- as.data.frame(emu)
+rownames(emu) <- emu$Genus
+emu <- emu[-1]
+emu <- as.data.frame(t(emu))
+
+emu<- rownames_to_column(emu) 
+emu <- merge(meta[c(1,7)], emu, by.x = "rowname", by.y = "rowname" )
+emu <- emu[-1]
+emu_cols <- emu %>%
+  group_by(bio_samples) %>%
+  summarise(across(where(is.numeric), ~ sum(.x > 0, na.rm = TRUE))) %>%
+  select(where(~ any(.x == 3, na.rm = TRUE))) %>%
+  colnames()
+emu <- emu[emu_cols]
+rownames(emu) <- meta$rowname
+emu <- emu[-1]
+```
+
+
+#create phyloseq objects
+```{r}
+ps <- phyloseq(otu_table(emu, taxa_are_rows=FALSE), phyloseq::tax_table(as.matrix(taxa_emu)), sample_data(meta))
+
+```
+
+#create mpse objects
+```{r}
+ps %>% as.MPSE() -> mpse
+mpse <- mpse %>% mp_filter_taxa(.abundance = Abundance, min.abun = 1, min.prop = 0.01)
+mpse %<>% mp_rrarefy()
+```
+
+#alpha
+```{r fig.height=10, fig.width=4}
+mpse %<>% mp_cal_alpha(.abundance=RareAbundance)
+
+alpha_plot_group <- mpse %>% 
+    mp_plot_alpha(
+        .group=technology, 
+        .alpha=c(Shannon)
+    )+
+    scale_fill_brewer(palette = "Set1")+
+    scale_color_brewer(palette = "Set1")+
+    theme(axis.text.x = element_text(angle = 90, size = 20, colour = "black", hjust = 1), 
+          title = element_text(size = 15),
+          legend.position = "none")
+alpha_plot_group
+```
+#save alpha
+```{r}
+ggsave("path/to/alpha.pdf", plot = alpha_plot_group, device = "pdf", width = 4, height = 10)
+```
+
+# taxonomy barplots (genus)
+```{r fig.height=6, fig.width=9}
+mpse %<>%
+    mp_cal_abundance( # for each samples
+        .abundance = RareAbundance
+    ) %>%
+    mp_cal_abundance( # for each groups 
+        .abundance=RareAbundance,
+        .group=technology
+    )
+
+```
+```{r fig.height=6, fig.width=15}
+genus_barplot_1 <- mpse %>%
+  mp_plot_abundance(
+    width = 0.55,
+    .abundance = RareAbundance,
+    .group = technology,
+    taxa.class = Genus,
+    rmun = TRUE,
+    topn = 10,
+    rm.zero = TRUE,
+    plot.group = TRUE,
+    relative = TRUE,
+    force = TRUE
+  ) 
+plot_data <- ggplot_build(genus_barplot_1)
+unique(plot_data[["data"]][[1]][["alluvium"]])
+
+predefined_colors <- c(
+  "Others" = "#54278F",
+  "g__Arthrobacter_A" = "#A461A1",
+  "g__AC-51" = "#722427",
+  "g__Solirubrobacter" = "#8AA868",
+  "g__Z2-YC6860" = "#AA4315",
+  "g__QHXM01" = "#4D4D4D",
+  "g__Blastococcus" = "#429375",
+  "g__Sphingomicrobium" = "#883590",
+  "g__JACDCA01" = "#F28629",
+  "g__GWC2-73-18" = "#E6DB71",
+  "g__Palsa-739" = "#1F78B4"
+)
+
+genus_barplot_1_1 <- genus_barplot_1 +
+  scale_fill_manual(
+    values = predefined_colors,
+    labels = gsub("^g__", "", names(predefined_colors))
+  ) +
+  theme(
+    legend.position = "right",
+    legend.text = element_text(size = 20),
+    legend.key.height = unit(0.4, 'cm'),
+    legend.key.width = unit(0.3, 'cm'),
+    axis.text.x = element_text(angle = 45, size = 16, colour = "black", hjust = 1),
+    title = element_text(size = 24)
+  ) +
+  guides(fill = guide_legend(ncol = 1)) +
+  xlab("Technology")
+
+
+genus_barplot_1_1
+```
+
+#save bar
+```{r}
+ggsave("path/to/genus_bar.pdf", plot = genus_barplot_1_1, device = "pdf", width = 15, height = 6)
+```
+
+
+
+
+#venn plot
+```{r fig.height=10, fig.width=12}
+
+venn.plot <- ggvenn::ggvenn(list(`Illumina V4` = unique(taxa_ill_v4$Genus[taxa_ill_v4$Genus %in% colnames(emu)]),
+                                 `Illumina V3-V4` = unique(taxa_ill_v3_v4$Genus[taxa_ill_v3_v4$Genus %in% colnames(emu)]),
+                                 `PacBio V4` = unique(taxa_pac_v4$Genus[taxa_pac_v4$Genus %in% colnames(emu)]),
+                                 `PacBio V3-V4` = unique(taxa_pac_v3_v4$Genus[taxa_pac_v3_v4$Genus %in% colnames(emu)])),
+                           text_size = 7, set_name_size = 6 )
+venn.plot
+```
+#save venn
+```{r}
+ggsave("path/to/venn.pdf", plot = venn.plot, width = 12, height = 10, device = "pdf")
+```
+
