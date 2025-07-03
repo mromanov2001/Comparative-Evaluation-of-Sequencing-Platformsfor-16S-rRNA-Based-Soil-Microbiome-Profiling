@@ -1,0 +1,77 @@
+
+
+#activate packages
+```{r}
+library(dada2)
+library(phyloseq)
+library(Biostrings)
+library(ggplot2)
+library(dplyr)
+```
+
+#set dir
+```{r}
+path <- "/path/to/data" # CHANGE ME to the directory containing the fastq files 
+list.files(path)
+```
+
+#create lists of reads
+```{r}
+# 
+fn <- sort(list.files(path, pattern="_ONT_50.fastq.gz", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+
+sample.names <- sapply(strsplit(basename(fn), "\\_"), function(x) paste(x[1], x[2], "V4", sep = "_"))
+#sample.names <- sapply(strsplit(basename(fn), "_"), `[`, 1)
+```
+
+#Filter and trim
+```{r}
+# Place filtered files in filtered/ subdirectory
+filt <- file.path(path, "filtered", paste0(sample.names, "_filt.fastq.gz"))
+names(filt) <- sample.names
+
+out <- filterAndTrim(fn, filt, truncLen=0,
+              maxN=0, maxEE=2, truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+head(out)
+```
+
+```{r}
+err <- learnErrors(filt, multithread=TRUE)
+dada_out <- dada(filt, err=err, multithread=TRUE)
+
+#Construct sequence table
+seqtab_1 <- makeSequenceTable(dada_out)
+dim(seqtab_1)
+
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab_1)))
+
+#Remove chimeras
+seqtab.nochim_1 <- removeBimeraDenovo(seqtab_1, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim_1)
+```
+
+
+#Assign taxonomy GTDB
+```{r}
+taxa_2 <- assignTaxonomy(seqtab.nochim_1, "/path/to/GTDB_bac120_arc122_ssu_r202_Genus.fa.gz", multithread=TRUE)
+```
+#save results
+```{r}
+df_seq_no_chim <- as.data.frame(seqtab.nochim_1)
+df_taxa <- as.data.frame(taxa_2)
+
+df_taxa <- df_taxa %>% filter(Kingdom %in% c("Bacteria"))
+df_seq_no_chim <- df_seq_no_chim %>% select(rownames(df_taxa))
+
+write.table(df_seq_no_chim, "/path/to/seqtab.nochim.tsv", quote = F, sep = "\t", row.names = TRUE)
+write.table(df_taxa, "/path/to/taxa.tsv", quote = F, sep = "\t")
+write.table(out, "/path/to/statistic.tsv", quote = F, sep = "\t")
+
+```
+
+
+
